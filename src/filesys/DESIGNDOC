@@ -1,0 +1,236 @@
++-------------------------+
+|		     CS 140	          |
+| PROJECT 4: FILE SYSTEMS |
+|	   DESIGN DOCUMENT      |
++-------------------------+
+
+---- GROUP ----
+
+>> Fill in the names and email addresses of your group members.
+
+Henry Filosa <hfilosa@uchicago>
+Andrew Callahan <acallahan@uchicago.edu>
+
+---- PRELIMINARIES ----
+
+>> If you have any preliminary comments on your submission, notes for the
+>> TAs, or extra credit, please give them here.
+
+>> Please cite any offline or online sources you consulted while
+>> preparing your submission, other than the Pintos documentation, course
+>> text, lecture notes, and course staff.
+
+INDEXED AND EXTENSIBLE FILES
+============================
+
+---- DATA STRUCTURES ----
+
+>> A1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+//In inode.c
+struct inode_disk
+  {
+    block_sector_t sectors[SECTOR_CNT]; /* Sectors. */
+    enum inode_type type;               /* FILE_INODE or DIR_NODE. */
+    off_t length;                       /* File size in bytes. */
+    unsigned magic;                     /* Magic number. */
+  };
+
+>> A2: What is the maximum size of a file supported by your inode
+>> structure?  Show your work.
+pointers_per_sector = BLOCK_SECTOR_SIZE/Pointer_size) = 2^9 / 2^2 = 2^7 pointers
+max_size = (#Direct_Blocks + #Indirect_blocks*pointers_per_sector + #dbl_indirect_blocks*pointers_per_sector*pointers_per_sector) * BLOCK_SECTOR_SIZE
+max_size = (123 + 1*2^7 + 1*2^7 + 1*2^7*2^7) * 2^9 bytes
+max_size = 8,517,120 Bytes
+max_size ~ 8.5 MB
+
+---- SYNCHRONIZATION ----
+
+>> A3: Explain how your code avoids a race if two processes attempt to
+>> extend a file at the same time.
+N/A as this cannot occur as only one file at a time can be modifying a file.
+
+>> A4: Suppose processes A and B both have file F open, both
+>> positioned at end-of-file.  If A reads and B writes F at the same
+>> time, A may read all, part, or none of what B writes.  However, A
+>> may not read data other than what B writes, e.g. if B writes
+>> nonzero data, A is not allowed to see all zeros.  Explain how your
+>> code avoids this race.
+N/A as this cannot occur as either A reads first and gets nothing, or B writes
+first and A reads what B writes.
+
+>> A5: Explain how your synchronization design provides "fairness".
+>> File access is "fair" if readers cannot indefinitely block writers
+>> or vice versa.  That is, many processes reading from a file cannot
+>> prevent forever another process from writing the file, and many
+>> processes writing to a file cannot prevent another process forever
+>> from reading the file.
+Our system is fair because it is first come, first serve due to the file system lock.
+A writer must eventually be able to write because it will only wait for readers that
+invoked the system call handler before it. The same is true for readers.
+However this is very inefficient because there can only be one reader or writer at a time
+as opposed to many readers at a single time.
+
+---- RATIONALE ----
+
+>> A6: Is your inode structure a multilevel index?  If so, why did you
+>> choose this particular combination of direct, indirect, and doubly
+>> indirect blocks?  If not, why did you choose an alternative inode
+>> structure, and what advantages and disadvantages does your
+>> structure have, compared to a multilevel index?
+Our inode structure is a multilevel index with 123 direct blocks, one indirect,
+and one doubly indirect. This combination was chosen to maximize the number of direct blocks while
+fitting exactly into a single sector and having a maximum file size as large as the file system.
+These gives 1 IO call for files less than 64 KB in size, only one additional IOS for files greater than
+64 KB and less than 128 KB and two additional IOs for files larger than that.
+
+SUBDIRECTORIES
+==============
+
+---- DATA STRUCTURES ----
+
+>> B1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+//Added padding to struct dir in directory.h
+struct dir
+  {
+    struct inode *inode;                /* Backing store. */
+    off_t pos;                          /* Current position. */
+    bool padding;                       /* add a boolean, so dir and file are the same size */
+  };
+
+//In thread.h, added pointer to directory if file descriptor is for a directory
+struct file_descriptor{
+  int fd; /* File Descriptor Number */
+  struct file *file; /* File which corresponds to FD */
+  struct dir *dir; /* directory which corresponds to FD, mutualy exculsive with file */
+  struct list_elem fd_elem; /* List element used to place File Descriptor in thread's file descriptor table */
+};
+
+//Added to thread struct in thread.h
+  block_sector_t cwd;                 /* On disk sector number of threads current working directory */
+
+---- ALGORITHMS ----
+
+>> B2: Describe your code for traversing a user-specified path.  How
+>> do traversals of absolute and relative paths differ?
+Paths are recursively traversed by separating the string path and searching the current directory for
+a subdirectory or file of the remaining path name. If a file or directory is found of that name and
+the path name is completely parsed, the traversal has successfully completed. Traversals of absolute
+and relative paths differ in what the starting directory of the recursive traversal is. First the thread's
+current working directory is checked for a sub directory of the first part of the path name. If one
+exists the traversal begins there. Otherwise, the path is absolute and the traversal starts from the root.
+
+---- SYNCHRONIZATION ----
+
+>> B4: How do you prevent races on directory entries?  For example,
+>> only one of two simultaneous attempts to remove a single file
+>> should succeed, as should only one of two simultaneous attempts to
+>> create a file with the same name, and so on.
+N/A as this cannot occur due to the fat file lock in system call handler
+
+>> B5: Does your implementation allow a directory to be removed if it
+>> is open by a process or if it is in use as a process's current
+>> working directory?  If so, what happens to that process's future
+>> file system operations?  If not, how do you prevent it?
+For any directory inode to be removed we check that it is not opened by any other process via open_cnt variable in the inode.
+Then we also make sure it is not the same sector as the cwd, as the sector uniquely defines the inode. 
+
+---- RATIONALE ----
+
+>> B6: Explain why you chose to represent the current directory of a
+>> process the way you did.
+We use the on disk sector number of the directory because it is a stable reference which
+guarantees that the possibly on-disk directory information of its sector can always be referenced.
+Previously, we used a pointer to the directory's structure, but other threads may deallocate
+that structure, leading to errors.
+
+BUFFER CACHE
+============
+
+---- DATA STRUCTURES ----
+
+>> C1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+//Global in cache.c
+static int hand = 0;
+
+//In cache.h
+struct cache_block
+  {
+    block_sector_t sector; // On-disk sector of this cache block
+    bool used;             // Whether this block has been recently read/written to
+    bool dirty;            // Whether data has been modified since being read from disk
+    uint8_t data[BLOCK_SECTOR_SIZE]; // Data held on disk in sector
+  };
+
+---- ALGORITHMS ----
+
+>> C2: Describe how your cache replacement algorithm chooses a cache
+>> block to evict.
+A hand sweeps the cache, setting used bit to false as it goes and evicting the
+first cache block it finds which is not in use. Use is set to true whenever a
+cache block is called by cache_read.
+
+>> C3: Describe your implementation of write-behind.
+N/A
+
+>> C4: Describe your implementation of read-ahead.
+N/A
+
+---- SYNCHRONIZATION ----
+
+>> C5: When one process is actively reading or writing data in a
+>> buffer cache block, how are other processes prevented from evicting
+>> that block?
+N/A as this cannot occur due to the fat file lock in system call handler
+
+>> C6: During the eviction of a block from the cache, how are other
+>> processes prevented from attempting to access the block?
+N/A as this cannot occur due to the fat file lock in system call handler
+
+---- RATIONALE ----
+
+>> C7: Describe a file workload likely to benefit from buffer caching,
+>> and workloads likely to benefit from read-ahead and write-behind.
+A workload which makes many repeat reads to the same area of disk would benefit from
+the data being cached in memory as repeat reading IOs could be avoided.
+A workload which reads data from disk and then thinks and then reads from this disk and so on would benefit from read ahead as
+the IOs would be performed all at once reducing the number of actual IOs. This will reduce the positioning time of the IOs enabling a faster user experience.
+When the original thread regains control of the CPU it will have a large amount of data already in memory, 
+ready to be accessed.
+A workload which repeatedly writes the same disk area would benefit from write behind as best case
+a single IO would be performed to write back to disk when the process has really finished
+modifying the area.
+
+SURVEY QUESTIONS
+================
+
+Answering these questions is optional, but it will help us improve the
+course in future quarters.  Feel free to tell us anything you
+want--these questions are just to spur your thoughts.  You may also
+choose to respond anonymously in the course evaluations at the end of
+the quarter.
+
+>> In your opinion, was this assignment, or any one of the three problems
+>> in it, too easy or too hard?  Did it take too long or too little time?
+It was one of the hardest to debug. This would be nightmarish if we had to do synchronization
+
+>> Did you find that working on a particular part of the assignment gave
+>> you greater insight into some aspect of OS design?
+The extensible files section was the most helpful
+
+>> Is there some particular fact or hint we should give students in
+>> future quarters to help them solve the problems?  Conversely, did you
+>> find any of our guidance to be misleading?
+
+>> Do you have any suggestions for the TAs to more effectively assist
+>> students in future quarters?
+
+>> Any other comments?
